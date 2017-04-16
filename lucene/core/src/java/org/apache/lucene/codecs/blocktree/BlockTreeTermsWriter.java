@@ -636,8 +636,51 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
      *  we record the starting label of the suffix of each floor block. */
     private PendingBlock writeBlock(int prefixLength, boolean isFloor, int floorLeadLabel, int start, int end, boolean hasTerms, boolean hasSubBlocks) throws IOException {
 
+      // System.err.println("===========================");
+      // System.err.println("fieldName :" + fieldInfo.name);
+      // System.err.println("pending :" + pending);
+      // System.err.println("pendingSize :" + pending.size());
+      // System.err.println("prefixLength :" + prefixLength);
+      // System.err.println("start :" + start);
+      // System.err.println("end :" + end);
+      // System.err.println("hasSubBlocks :" + hasSubBlocks);
+      /** abc abcd abcde abde abdf abdfg ae aea af **/
+      /** final int minItemsInBlock = 4;           **/
+      // ===========================
+      // fieldName :contents
+      // pending :[abc [61 62 63], abcd [61 62 63 64], abcde [61 62 63 64 65], abde [61 62 64 65], abdf [61 62 64 66], abdfg [61 62 64 66 67]]
+      // pendingSize :6
+      // prefixLength :2
+      // start :0
+      // end :6
+      // hasSubBlocks :false
+      // (int) suffixWriter.getFilePointer() = 19
+      /** 19 = {VIntSizeOfSuffixLength("abc".length-prefixLength)=1}+{Suffix("abc").size=1} + {VIntSizeOfSuffixLength(2)=1}+{"cd".size=2} + {1}+{3} + {1}+{2} + {1}+{2} + {1}+{3} **/
+      // (int) (suffixWriter.getFilePointer() << 1) | (isLeafBlock ? 1:0) = 39
+      // (int) statsWriter.getFilePointer() = 12
+      // (int) metaWriter.getFilePointer() = 18
+      // ===========================
+      // fieldName :contents
+      // pending :[BLOCK: ab [61 62], ae [61 65], aea [61 65 61], af [61 66]]
+      // pendingSize :4
+      // prefixLength :1
+      // start :0
+      // end :4
+      // hasSubBlocks :true
+      // ===========================
+      // fieldName :contents
+      // pending :[BLOCK: a [61]]
+      // pendingSize :1
+      // prefixLength :0
+      // start :0
+      // end :1
+      // hasSubBlocks :true
+
       assert end > start;
 
+      ////////////////////////////////////////
+      //// 保存 block startFP
+      ////////////////////////////////////////
       long startFP = termsOut.getFilePointer();
 
       boolean hasFloorLeadLabel = isFloor && floorLeadLabel != -1;
@@ -646,6 +689,10 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
       System.arraycopy(lastTerm.get().bytes, 0, prefix.bytes, 0, prefixLength);
       prefix.length = prefixLength;
 
+      ////////////////////////////////////////
+      //// tim 中写入 EntryCount
+      //// 或然跟随规则
+      ////////////////////////////////////////
       // Write block header:
       int numEntries = end - start;
       int code = numEntries << 1;
@@ -691,11 +738,22 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
             System.out.println("    write term suffix=" + brToString(suffixBytes));
           }
           */
+
+          ////////////////////////////////////////
+          //// 写入 VInt 格式的 后缀长度
+          ////////////////////////////////////////
           // For leaf block we write suffix straight
           suffixWriter.writeVInt(suffix);
+
+          ////////////////////////////////////////
+          //// 写入 后缀
+          ////////////////////////////////////////
           suffixWriter.writeBytes(term.termBytes, prefixLength, suffix);
           assert floorLeadLabel == -1 || (term.termBytes[prefixLength] & 0xff) >= floorLeadLabel;
 
+          ////////////////////////////////////////
+          //// 写入 TermStats
+          ////////////////////////////////////////
           // Write term stats, to separate byte[] blob:
           statsWriter.writeVInt(state.docFreq);
           if (fieldInfo.getIndexOptions() != IndexOptions.DOCS) {
@@ -703,6 +761,10 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
             statsWriter.writeVLong(state.totalTermFreq - state.docFreq);
           }
 
+          //////////////////////////////////////////////////
+          //// 写入 TermMetadata
+          //// 由 Lucene50PostingsWriter 负责写入
+          //////////////////////////////////////////////////
           // Write term meta data
           postingsWriter.encodeTerm(longs, bytesWriter, fieldInfo, state, absolute);
           for (int pos = 0; pos < longsSize; pos++) {
@@ -718,6 +780,11 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
         subIndices = new ArrayList<>();
         for (int i=start;i<end;i++) {
           PendingEntry ent = pending.get(i);
+
+          ////////////////////////////////////////////////////////////
+          //// suffixWriter.writeVInt((suffix<<1) | (isTerm?0:1));
+          //// 后缀长度使用或然跟随规则，suffix/2 为真实长度
+          ////////////////////////////////////////////////////////////
           if (ent.isTerm) {
             PendingTerm term = (PendingTerm) ent;
             assert StringHelper.startsWith(term.termBytes, prefix): "term.term=" + term.termBytes + " prefix=" + prefix;
@@ -768,6 +835,13 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
 
             assert suffix > 0;
 
+            ////////////////////////////////////////////////////////////
+            //// 如果是 PendingBlock
+            //// 则不会写入 TermStats 和 TermMetadata
+            //// suffix 部分除了写入 suffixLengthVInt 和 suffix
+            //// 还会写入 startFPDelta 用来找到该 block 的 startFP
+            ////////////////////////////////////////////////////////////
+
             // For non-leaf block we borrow 1 bit to record
             // if entry is term or sub-block
             suffixWriter.writeVInt((suffix<<1)|1);
@@ -798,18 +872,40 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
       // this would take more space but would enable binary
       // search on lookup
 
+      //////////////////////////////////////////////////////////////////////
+      //// tim 中写入 SuffixLength 或者 SuffixLength[,Sub?]
+      //// 这地方叫 SuffixLength 感觉不太恰当
+      //////////////////////////////////////////////////////////////////////
       // Write suffixes byte[] blob to terms dict output:
       termsOut.writeVInt((int) (suffixWriter.getFilePointer() << 1) | (isLeafBlock ? 1:0));
+
+      //////////////////////////////////////////////////////////////////////
+      //// tim 中写入所有的后缀
+      //// <SuffixLengthVInt,Suffix>[,<SuffixLengthVInt,Suffix>...]
+      //// 如果是 sub-block 则写入 <SuffixLengthVInt,Suffix,startFPDelta>
+      //////////////////////////////////////////////////////////////////////
       suffixWriter.writeTo(termsOut);
       suffixWriter.reset();
 
       // Write term stats byte[] blob
+      ////////////////////////////////////////
+      //// tim 中写入 StatsLength
+      ////////////////////////////////////////
       termsOut.writeVInt((int) statsWriter.getFilePointer());
+      //////////////////////////////////////////////////
+      //// tim 中写入 TermStats * EntryCount
+      //////////////////////////////////////////////////
       statsWriter.writeTo(termsOut);
       statsWriter.reset();
 
       // Write term meta data byte[] blob
+      ////////////////////////////////////////
+      //// tim 中写入 MetaLength
+      ////////////////////////////////////////
       termsOut.writeVInt((int) metaWriter.getFilePointer());
+      //////////////////////////////////////////////////
+      //// tim 中写入 TermMetadata * EntryCount
+      //////////////////////////////////////////////////
       metaWriter.writeTo(termsOut);
       metaWriter.reset();
 
