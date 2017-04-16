@@ -1000,6 +1000,10 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
       if (numTerms > 0) {
         // if (DEBUG) System.out.println("BTTW: finish prefixStarts=" + Arrays.toString(prefixStarts));
 
+        ////////////////////////////////////////
+        //// 写入 root block
+        ////////////////////////////////////////
+
         // Add empty term to force closing of all final blocks:
         pushTerm(new BytesRef());
 
@@ -1015,7 +1019,63 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
         assert root.index.getEmptyOutput() != null;
 
         // Write FST to index
+
+        /** abc abcd abcde abde abdf abdfg ae aea af **/
+        /** final int minItemsInBlock = 3;           **/
+        // System.err.println("inputs of root.index: ");
+        // BytesRefFSTEnum<BytesRef> iterator = new BytesRefFSTEnum<>(root.index);
+        // while (iterator.next() != null) {
+        //   BytesRefFSTEnum.InputOutput<BytesRef> mapEntry = iterator.current();
+        //   System.err.println(mapEntry.input.utf8ToString());
+        // }
+
+        // inputs of root.index:
+        //  /** 这里应该是一个 empty 的输入 **/
+        // a
+        // abc
+        // abd
+
+        // ===========================
+        // fieldName :contents
+        // pending :[abc [61 62 63], abcd [61 62 63 64], abcde [61 62 63 64 65]]
+        // pendingSize :3
+        // prefixLength :3
+        // start :0
+        // end :3
+        // hasSubBlocks :false
+        // ===========================
+        // fieldName :contents
+        // pending :[BLOCK: abc [61 62 63], abde [61 62 64 65], abdf [61 62 64 66], abdfg [61 62 64 66 67]]
+        // pendingSize :4
+        // prefixLength :3
+        // start :1
+        // end :4
+        // hasSubBlocks :false
+        // ===========================
+        // fieldName :contents
+        // pending :[BLOCK: abc [61 62 63], BLOCK: abd [61 62 64], ae [61 65], aea [61 65 61], af [61 66]]
+        // pendingSize :5
+        // prefixLength :1
+        // start :0
+        // end :5
+        // hasSubBlocks :true
+        // ===========================
+        // fieldName :contents
+        // pending :[BLOCK: a [61]]
+        // pendingSize :1
+        // prefixLength :0
+        // start :0
+        // end :1
+        // hasSubBlocks :true
+
+        //////////////////////////////////////////////////
+        //// 保存下即将写入的 FSTIndex 的 indexStartFP
+        //////////////////////////////////////////////////
         indexStartFP = indexOut.getFilePointer();
+
+        ////////////////////////////////////////
+        //// tip 中写入 FSTIndex
+        ////////////////////////////////////////
         root.index.save(indexOut);
         //System.out.println("  write FST " + indexStartFP + " field=" + fieldInfo.name);
 
