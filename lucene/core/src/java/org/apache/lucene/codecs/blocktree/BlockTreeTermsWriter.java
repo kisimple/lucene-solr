@@ -1185,6 +1185,7 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
         termsOut.writeVLong(field.numTerms);
 
         //// rootCode = root.index.emptyOutput
+        //// 指向 root block
         termsOut.writeVInt(field.rootCode.length);
         termsOut.writeBytes(field.rootCode.bytes, field.rootCode.offset, field.rootCode.length);
 
