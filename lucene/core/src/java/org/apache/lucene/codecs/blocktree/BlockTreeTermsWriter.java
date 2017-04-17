@@ -1131,29 +1131,55 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
       final long dirStart = termsOut.getFilePointer();
       final long indexDirStart = indexOut.getFilePointer();
 
+      ////////////////////////////////////
+      //// tim 中写入 FieldSummary
+      ////////////////////////////////////
       termsOut.writeVInt(fields.size());
-      
       for(FieldMetaData field : fields) {
         //System.out.println("  field " + field.fieldInfo.name + " " + field.numTerms + " terms");
         termsOut.writeVInt(field.fieldInfo.number);
         assert field.numTerms > 0;
         termsOut.writeVLong(field.numTerms);
+
+        //// rootCode = root.index.emptyOutput
         termsOut.writeVInt(field.rootCode.length);
         termsOut.writeBytes(field.rootCode.bytes, field.rootCode.offset, field.rootCode.length);
+
         assert field.fieldInfo.getIndexOptions() != IndexOptions.NONE;
         if (field.fieldInfo.getIndexOptions() != IndexOptions.DOCS) {
           termsOut.writeVLong(field.sumTotalTermFreq);
         }
         termsOut.writeVLong(field.sumDocFreq);
         termsOut.writeVInt(field.docCount);
+
+        //// longsSize = postingsWriter.setField(fieldInfo)
         termsOut.writeVInt(field.longsSize);
+
+        ////////////////////////////////////////
+        //// tip 中写入 indexStartFP
+        ////////////////////////////////////////
         indexOut.writeVLong(field.indexStartFP);
+
         writeBytesRef(termsOut, field.minTerm);
         writeBytesRef(termsOut, field.maxTerm);
       }
+
+      ////////////////////////////////////
+      //// tim 中写入 DirOffset
+      ////////////////////////////////////
       writeTrailer(termsOut, dirStart);
+      ////////////////////////////////////
+      //// tim 中写入 Footer
+      ////////////////////////////////////
       CodecUtil.writeFooter(termsOut);
+
+      ////////////////////////////////////
+      //// tip 中写入 DirOffset
+      ////////////////////////////////////
       writeIndexTrailer(indexOut, indexDirStart);
+      ////////////////////////////////////
+      //// tip 中写入 Footer
+      ////////////////////////////////////
       CodecUtil.writeFooter(indexOut);
       success = true;
     } finally {
