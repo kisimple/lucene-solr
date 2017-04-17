@@ -206,7 +206,7 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
   private final IndexOutput termsOut;
   private final IndexOutput indexOut;
   final int maxDoc;
-  final int minItemsInBlock;
+  final int minItemsInBlock = 4;
   final int maxItemsInBlock;
 
   final PostingsWriterBase postingsWriter;
@@ -259,7 +259,7 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
 
     this.maxDoc = state.segmentInfo.maxDoc();
     this.fieldInfos = state.fieldInfos;
-    this.minItemsInBlock = minItemsInBlock;
+    // this.minItemsInBlock = minItemsInBlock;
     this.maxItemsInBlock = maxItemsInBlock;
     this.postingsWriter = postingsWriter;
 
@@ -968,14 +968,55 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
         pos++;
       }
 
-      // if (DEBUG) System.out.println("  shared=" + pos + "  lastTerm.length=" + lastTerm.length);
+//      System.err.println("========================================");
+//      System.err.println("text=" + text.utf8ToString());
+//      System.err.println("lastTerm=" + lastTerm.toBytesRef().utf8ToString());
+//      System.err.println("shared=" + pos);
+//      System.err.println("pending=" + pending);
+//      System.err.print("prefixStarts=");
+//      for (int prefixStart : prefixStarts) {
+//        System.err.print(prefixStart + ", ");
+//      }
+//      System.err.println();
 
+      ////////////////////////////////////////////////////////////
+      //// 0. 下文将 lastTerm 与 currentTerm 即 text 相同的前缀
+      ////     记作 $PREFIX
+      ////////////////////////////////////////////////////////////
+
+      ////////////////////////////////////////////////////////////
+      //// 1. $PREFIX 必须被 lastTerm 包含，这里的包含不包括相等
+      ////    例如 lastTerm=abc  currentTerm=abcx 无法进入for循环
+      ////    例如 lastTerm=abcd currentTerm=abcx 可以进入for循环
+      ////////////////////////////////////////////////////////////
       // Close the "abandoned" suffix now:
       for(int i=lastTerm.length()-1;i>=pos;i--) {
 
+        //////////////////////////////////////////////////////////////////////////////////////////
+        //// 2.0 此时 prefixStarts 为 pending 中包含 lastTerm 各级前缀的首个下标
+        ////     例如 pending=[ab,abc,abd,abddd] lastTerm=abddd
+        ////     则 pending 中以 a     为前缀的第一个 term 是 ab   ，因此 prefixStarts[0]=0
+        ////     则 pending 中以 ab    为前缀的第一个 term 是 ab   ，因此 prefixStarts[1]=0
+        ////     则 pending 中以 abd   为前缀的第一个 term 是 abd  ，因此 prefixStarts[2]=2
+        ////     则 pending 中以 abdd  为前缀的第一个 term 是 abddd，因此 prefixStarts[3]=3
+        ////     则 pending 中以 abddd 为前缀的第一个 term 是 abddd，因此 prefixStarts[4]=3
+        //////////////////////////////////////////////////////////////////////////////////////////
+
+        //////////////////////////////////////////////////////////////////////
+        //// 2.1 prefixTopSize 为 pending 中包含 lastTerm 各级前缀的个数
+        ////     例如 pending=[ab,abc,abd,abddd]
+        ////     lastTerm=abddd, currentTerm=abdx
+        ////     则 pending 中包含 abddd 前缀的个数为 4-3=1，即 abddd
+        ////     则 pending 中包含 abdd  前缀的个数为 4-3=1，即 abddd
+        ////     由于 i>=pos 因此小于等于 $PREFIX 的前缀不会计算，以下计算只为方便理解
+        ////     则 pending 中包含 abd   前缀的个数为 4-2=2，即 abd, abddd
+        //////////////////////////////////////////////////////////////////////
         // How many items on top of the stack share the current suffix
         // we are closing:
         int prefixTopSize = pending.size() - prefixStarts[i];
+
+//        System.err.println("i=" + i + ", prefixTopSize=" + prefixTopSize);
+
         if (prefixTopSize >= minItemsInBlock) {
           // if (DEBUG) System.out.println("pushTerm i=" + i + " prefixTopSize=" + prefixTopSize + " minItemsInBlock=" + minItemsInBlock);
           writeBlocks(i+1, prefixTopSize);
@@ -983,10 +1024,12 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
         }
       }
 
+      ////////////////////////////////////////
+      //// 3. currentTerm 的后缀全都指向自己
+      ////////////////////////////////////////
       if (prefixStarts.length < text.length) {
         prefixStarts = ArrayUtil.grow(prefixStarts, text.length);
       }
-
       // Init new tail:
       for(int i=pos;i<text.length;i++) {
         prefixStarts[i] = pending.size();
