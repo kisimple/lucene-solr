@@ -206,7 +206,7 @@ public final class BlockTreeTermsWriter extends FieldsConsumer {
   private final IndexOutput termsOut;
   private final IndexOutput indexOut;
   final int maxDoc;
-  final int minItemsInBlock = 4;
+  final int minItemsInBlock = 3;
   final int maxItemsInBlock;
 
   final PostingsWriterBase postingsWriter;

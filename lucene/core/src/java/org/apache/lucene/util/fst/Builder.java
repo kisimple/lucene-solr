@@ -18,8 +18,10 @@ package org.apache.lucene.util.fst;
  */
 
 import java.io.IOException;
+import java.util.Arrays;
 
 import org.apache.lucene.util.ArrayUtil;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IntsRef;
 import org.apache.lucene.util.IntsRefBuilder;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -271,6 +273,9 @@ public class Builder<T> {
         final boolean isFinal = node.isFinal || node.numArcs == 0;
 
         if (doCompile) {
+          ////////////////////////////////////////
+          //// compileNode 并更新父节点的 arc 信息
+          ////////////////////////////////////////
           // this node makes it and we now compile it.  first,
           // compile any targets that were previously
           // undecided:
@@ -338,6 +343,9 @@ public class Builder<T> {
     assert lastInput.length() == 0 || input.compareTo(lastInput.get()) >= 0: "inputs are added out of order lastInput=" + lastInput.get() + " vs input=" + input;
     assert validOutput(output);
 
+    ////////////////////////////////////////
+    //// setEmptyOutput
+    ////////////////////////////////////////
     //System.out.println("\nadd: " + input);
     if (input.length == 0) {
       // empty input: only allowed as first input.  we have
@@ -351,6 +359,9 @@ public class Builder<T> {
       return;
     }
 
+    ////////////////////////////////////////
+    //// 找出 input 与 lastInput 的公共前缀
+    ////////////////////////////////////////
     // compare shared prefix length
     int pos1 = 0;
     int pos2 = input.offset;
@@ -365,7 +376,10 @@ public class Builder<T> {
       pos2++;
     }
     final int prefixLenPlus1 = pos1+1;
-      
+
+    ////////////////////////////////////////
+    //// 根据 input 调整 frontier 长度
+    ////////////////////////////////////////
     if (frontier.length < input.length+1) {
       @SuppressWarnings({"rawtypes","unchecked"}) final UnCompiledNode<T>[] next =
         new UnCompiledNode[ArrayUtil.oversize(input.length+1, RamUsageEstimator.NUM_BYTES_OBJECT_REF)];
@@ -376,25 +390,39 @@ public class Builder<T> {
       frontier = next;
     }
 
+    ////////////////////////////////////////
+    //// 固化 lastInput 的后缀
+    ////////////////////////////////////////
     // minimize/compile states from previous input's
     // orphan'd suffix
     freezeTail(prefixLenPlus1);
 
+    ////////////////////////////////////////
+    //// 将 input 的后缀添加到 frontier
+    ////////////////////////////////////////
     // init tail states for current input
     for(int idx=prefixLenPlus1;idx<=input.length;idx++) {
+      //// 此时 arc.output 是 NO_OUTPUT
       frontier[idx-1].addArc(input.ints[input.offset + idx - 1],
                              frontier[idx]);
       frontier[idx].inputCount++;
     }
 
+    ////////////////////////////////////////
+    //// 设置 final node
+    ////////////////////////////////////////
     final UnCompiledNode<T> lastNode = frontier[input.length];
     if (lastInput.length() != input.length || prefixLenPlus1 != input.length + 1) {
       lastNode.isFinal = true;
       lastNode.output = NO_OUTPUT;
     }
 
+    ////////////////////////////////////////
+    //// 重新计算 output
+    ////////////////////////////////////////
     // push conflicting outputs forward, only as far as
     // needed
+    //// 循环向后更新 output
     for(int idx=1;idx<prefixLenPlus1;idx++) {
       final UnCompiledNode<T> node = frontier[idx];
       final UnCompiledNode<T> parentNode = frontier[idx-1];
@@ -406,11 +434,26 @@ public class Builder<T> {
       final T wordSuffix;
 
       if (lastOutput != NO_OUTPUT) {
+        //////////////////////////////////////////////////
+        //// 如果 outputs 是 PositiveIntOutputs，
+        ////    commonOutputPrefix 相当于是二者最小值
+        //// 如果 outputs 是 CharSequenceOutputs，
+        ////    commonOutputPrefix 相当于是公共前缀
+        //////////////////////////////////////////////////
         commonOutputPrefix = fst.outputs.common(output, lastOutput);
         assert validOutput(commonOutputPrefix);
         wordSuffix = fst.outputs.subtract(lastOutput, commonOutputPrefix);
         assert validOutput(wordSuffix);
+
+        ////////////////////////////////////////
+        //// 修改父节点的 output
+        ////////////////////////////////////////
         parentNode.setLastOutput(input.ints[input.offset + idx - 1], commonOutputPrefix);
+
+        ////////////////////////////////////////
+        //// 某些情况下自身 output 也要修改
+        //// 例如 mop/3 moth/2 mx/1
+        ////////////////////////////////////////
         node.prependOutput(wordSuffix);
       } else {
         commonOutputPrefix = wordSuffix = NO_OUTPUT;
@@ -420,6 +463,9 @@ public class Builder<T> {
       assert validOutput(output);
     }
 
+    ////////////////////////////////////////
+    //// 设置 output
+    ////////////////////////////////////////
     if (lastInput.length() == input.length && prefixLenPlus1 == 1+input.length) {
       // same input more than 1 time in a row, mapping to
       // multiple outputs
@@ -446,6 +492,9 @@ public class Builder<T> {
 
     final UnCompiledNode<T> root = frontier[0];
 
+    ////////////////////////////////////////
+    //// 固化 lastInput
+    ////////////////////////////////////////
     // minimize nodes in the last word's suffix
     freezeTail(0);
     if (root.inputCount < minSuffixCount1 || root.inputCount < minSuffixCount2 || root.numArcs == 0) {
@@ -460,6 +509,11 @@ public class Builder<T> {
         compileAllTargets(root, lastInput.length());
       }
     }
+
+    ////////////////////////////////////////
+    //// 固化 frontier[0]
+    //// 设置 FST.startNode
+    ////////////////////////////////////////
     //if (DEBUG) System.out.println("  builder.finish root.isFinal=" + root.isFinal + " root.output=" + root.output);
     fst.finish(compileNode(root, lastInput.length()).node);
 
@@ -492,6 +546,18 @@ public class Builder<T> {
     public boolean isFinal;
     public T output;
     public T nextFinalOutput;
+
+    @Override
+    public String toString() {
+      String targetNode = (target instanceof CompiledNode) ? ((CompiledNode)target).node+"" : "UnCompiledNode{}";
+      return "Arc{" +
+              "label=" + new BytesRef(new byte[]{(byte)label}).utf8ToString() +
+              ", target=" + targetNode +
+              ", isFinal=" + isFinal +
+              ", output=" + output +
+              ", nextFinalOutput=" + nextFinalOutput +
+              '}';
+    }
   }
 
   // NOTE: not many instances of Node or CompiledNode are in
@@ -543,6 +609,17 @@ public class Builder<T> {
       arcs[0] = new Arc<>();
       output = owner.NO_OUTPUT;
       this.depth = depth;
+    }
+
+    @Override
+    public String toString() {
+      return "UnCompiledNode{" +
+              "numArcs=" + numArcs +
+              ", output=" + output +
+              ", isFinal=" + isFinal +
+              ", depth=" + depth +
+              ", arcs=" + Arrays.toString(arcs) +
+              '}';
     }
 
     @Override
@@ -619,6 +696,10 @@ public class Builder<T> {
         assert owner.validOutput(arcs[arcIdx].output);
       }
 
+      //////////////////////////////////////////////////////////////////////
+      //// 如果 lastInput 是 input 的前缀，这样的情况下，output 才会有值
+      //// freezeTail 中会将 node.output 赋值给 arc.nextFinalOutput
+      //////////////////////////////////////////////////////////////////////
       if (isFinal) {
         output = owner.fst.outputs.add(outputPrefix, output);
         assert owner.validOutput(output);

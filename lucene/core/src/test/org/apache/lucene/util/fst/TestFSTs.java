@@ -844,6 +844,21 @@ public class TestFSTs extends LuceneTestCase {
                  Util.getByOutput(fst, 17));
   }
 
+  public void testRun() throws Exception {
+    final PositiveIntOutputs outputs = PositiveIntOutputs.getSingleton();
+    final Builder<Long> builder = new Builder<>(FST.INPUT_TYPE.BYTE1, outputs);
+
+    final BytesRef a = new BytesRef("star");
+    final BytesRef b = new BytesRef("startxx");
+    final BytesRef c = new BytesRef("xxx");
+
+    builder.add(Util.toIntsRef(a, new IntsRefBuilder()), 3L);
+    builder.add(Util.toIntsRef(b, new IntsRefBuilder()), 2L);
+    builder.add(Util.toIntsRef(c, new IntsRefBuilder()), 3L);
+
+    builder.finish();
+  }
+
   public void testPrimaryKeys() throws Exception {
     Directory dir = newDirectory();
 

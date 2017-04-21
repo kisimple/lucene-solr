@@ -657,6 +657,9 @@ public final class FST<T> implements Accountable {
   // of the current byte[]
   long addNode(Builder.UnCompiledNode<T> nodeIn) throws IOException {
 
+//    System.err.println("========================================");
+//    System.err.println(nodeIn);
+
     //System.out.println("FST.addNode pos=" + bytes.getPosition() + " numArcs=" + nodeIn.numArcs);
     if (nodeIn.numArcs == 0) {
       if (nodeIn.isFinal) {
@@ -669,6 +672,10 @@ public final class FST<T> implements Accountable {
     final long startAddress = bytes.getPosition();
     //System.out.println("  startAddr=" + startAddress);
 
+    //////////////////////////////////////////////////
+    //// arc 信息是否使用固定长度存储
+    //// 使用固定长度可以用二分法优化 arc 的查找
+    //////////////////////////////////////////////////
     final boolean doFixedArray = shouldExpand(nodeIn);
     if (doFixedArray) {
       //System.out.println("  fixedArray");
@@ -683,6 +690,10 @@ public final class FST<T> implements Accountable {
 
     long lastArcStart = bytes.getPosition();
     int maxBytesPerArc = 0;
+
+    //////////////////////////////////////////////////
+    //// node 的物理表示就是 起始地址 + 所有的 arc 信息
+    //////////////////////////////////////////////////
     for(int arcIdx=0;arcIdx<nodeIn.numArcs;arcIdx++) {
       final Builder.Arc<T> arc = nodeIn.arcs[arcIdx];
       final Builder.CompiledNode target = (Builder.CompiledNode) arc.target;
@@ -693,6 +704,11 @@ public final class FST<T> implements Accountable {
         flags += BIT_LAST_ARC;
       }
 
+      //////////////////////////////////////////////////
+      //// 上一个固化的 node 是这条 arc 的 target
+      //// flag 增加 BIT_TARGET_NEXT 进行优化
+      //// 后面就不用写 arc 的 target 信息了
+      //////////////////////////////////////////////////
       if (lastFrozenNode == target.node && !doFixedArray) {
         // TODO: for better perf (but more RAM used) we
         // could avoid this except when arc is "near" the
@@ -703,6 +719,11 @@ public final class FST<T> implements Accountable {
       if (arc.isFinal) {
         flags += BIT_FINAL_ARC;
         if (arc.nextFinalOutput != NO_OUTPUT) {
+          ////////////////////////////////////////////////////////////
+          //// flag 不会等于 BIT_ARC_HAS_FINAL_OUTPUT=32
+          //// 至少是 BIT_ARC_HAS_FINAL_OUTPUT+BIT_FINAL_ARC
+          //// FST 读取的时候可以跟 ARCS_AS_FIXED_ARRAY=32 区分开来
+          ////////////////////////////////////////////////////////////
           flags += BIT_ARC_HAS_FINAL_OUTPUT;
         }
       } else {
@@ -710,6 +731,15 @@ public final class FST<T> implements Accountable {
       }
 
       boolean targetHasArcs = target.node > 0;
+
+      //////////////////////////////////////////////////////////////////////
+      //// 共享前缀的情况下，例如 stop/1 stopxx/2
+      //// 会出现 arc 是 final 的，但 arc 的 target 不是 stop node
+      //// 也就是 p 这条 arc 被共享了，这种情况下 p 的 nextFinalOutput 会有值
+      //////////////////////////////////////////////////////////////////////
+//      if(arc.isFinal && targetHasArcs) {
+//        System.err.println("*" + arc);
+//      }
 
       if (!targetHasArcs) {
         flags += BIT_STOP_NODE;
@@ -721,28 +751,47 @@ public final class FST<T> implements Accountable {
         flags += BIT_ARC_HAS_OUTPUT;
       }
 
+      ////////////////////////////////////////
+      //// 1. 写入 flag
+      ////////////////////////////////////////
       bytes.writeByte((byte) flags);
+
+      ////////////////////////////////////////
+      //// 2. 根据 INPUT_TYPE 写入 label
+      ////////////////////////////////////////
       writeLabel(bytes, arc.label);
 
       // System.out.println("  write arc: label=" + (char) arc.label + " flags=" + flags + " target=" + target.node + " pos=" + bytes.getPosition() + " output=" + outputs.outputToString(arc.output));
 
+      ////////////////////////////////////////
+      //// 3. 写入 output
+      ////////////////////////////////////////
       if (arc.output != NO_OUTPUT) {
         outputs.write(arc.output, bytes);
         //System.out.println("    write output");
         arcWithOutputCount++;
       }
 
+      ////////////////////////////////////////
+      //// 4. 写入 nextFinalOutput
+      ////////////////////////////////////////
       if (arc.nextFinalOutput != NO_OUTPUT) {
         //System.out.println("    write final output");
         outputs.writeFinalOutput(arc.nextFinalOutput, bytes);
       }
 
+      ////////////////////////////////////////
+      //// 5. 写入 target
+      ////////////////////////////////////////
       if (targetHasArcs && (flags & BIT_TARGET_NEXT) == 0) {
         assert target.node > 0;
         //System.out.println("    write target");
         bytes.writeVLong(target.node);
       }
 
+      ////////////////////////////////////////////////////////////
+      //// 保存 reusedBytesPerArc 并计算 maxBytesPerArc
+      ////////////////////////////////////////////////////////////
       // just write the arcs "like normal" on first pass,
       // but record how many bytes each one took, and max
       // byte size:
@@ -793,6 +842,10 @@ public final class FST<T> implements Accountable {
       
       final long fixedArrayStart = startAddress + headerLen;
 
+      //////////////////////////////////////////////////
+      //// startAddress 到 srcPos 的数据复制到
+      //// fixedArrayStart 到 destPos 之间
+      //////////////////////////////////////////////////
       // expand the arcs in place, backwards
       long srcPos = bytes.getPosition();
       long destPos = fixedArrayStart + nodeIn.numArcs*maxBytesPerArc;
@@ -810,13 +863,19 @@ public final class FST<T> implements Accountable {
           }
         }
       }
-      
+
+      ////////////////////////////////////////
+      //// 6. 写入 fixed array header
+      ////////////////////////////////////////
       // now write the header
       bytes.writeBytes(startAddress, header, 0, headerLen);
     }
 
     final long thisNodeAddress = bytes.getPosition()-1;
 
+    ////////////////////////////////////////
+    //// 7. 将刚才写入的数据按字节翻转
+    ////////////////////////////////////////
     bytes.reverse(startAddress, thisNodeAddress);
 
     // PackedInts uses int as the index, so we cannot handle
@@ -842,6 +901,7 @@ public final class FST<T> implements Accountable {
     }
     lastFrozenNode = node;
 
+    //System.err.println("CompiledNode="+node);
     //System.out.println("  ret node=" + node + " address=" + thisNodeAddress + " nodeAddress=" + nodeAddress);
     return node;
   }
