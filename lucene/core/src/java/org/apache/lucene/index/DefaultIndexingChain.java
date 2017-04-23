@@ -71,6 +71,7 @@ final class DefaultIndexingChain extends DocConsumer {
     this.docState = docWriter.docState;
     this.bytesUsed = docWriter.bytesUsed;
 
+    //// consumer chain 模式
     TermsHash termVectorsWriter = new TermVectorsConsumer(docWriter);
     termsHash = new FreqProxTermsWriter(docWriter, termVectorsWriter);
   }
@@ -89,7 +90,11 @@ final class DefaultIndexingChain extends DocConsumer {
     // aborting on any exception from this method
 
     int maxDoc = state.segmentInfo.maxDoc();
+
+    //// NormsFormat#normsConsumer
     writeNorms(state);
+
+    //// DocValuesFormat#fieldsConsumer
     writeDocValues(state);
     
     // it's possible all docs hit non-aborting exceptions...
@@ -109,8 +114,11 @@ final class DefaultIndexingChain extends DocConsumer {
       }
     }
 
+    //// FreqProxTermsWriter#flush
+    //// TermVectorsConsumer#flush
     termsHash.flush(fieldsToFlush, state);
 
+    //// FieldInfosFormat#write
     // Important to save after asking consumer to flush so
     // consumer can alter the FieldInfo* if necessary.  EG,
     // FreqProxTermsWriter does this with
@@ -289,13 +297,23 @@ final class DefaultIndexingChain extends DocConsumer {
     // (i.e., we cannot have more than one TokenStream
     // running "at once"):
 
+    //////////////////////////////////////////////////
+    //// 1. FreqProxTermsWriter#startDocument
+    ////    TermVectorsConsumer#startDocument
+    //////////////////////////////////////////////////
     termsHash.startDocument();
 
     fillStoredFields(docState.docID);
+    //////////////////////////////////////////////////
+    //// 2. StoredFieldsWriter#startDocument
+    //////////////////////////////////////////////////
     startStoredFields();
 
     boolean aborting = false;
     try {
+      //////////////////////////////////////////////////
+      //// 3. process fields 并设置 fields[]
+      //////////////////////////////////////////////////
       for (IndexableField field : docState.doc) {
         fieldCount = processField(field, fieldGen, fieldCount);
       }
@@ -304,15 +322,28 @@ final class DefaultIndexingChain extends DocConsumer {
       throw ae;
     } finally {
       if (aborting == false) {
+        //////////////////////////////////////////////////
+        //// 4. NormValuesWriter#addValue
+        ////    FreqProxTermsWriterPerField#finish
+        ////    TermVectorsConsumerPerField#finish
+        //////////////////////////////////////////////////
         // Finish each indexed field name seen in the document:
         for (int i=0;i<fieldCount;i++) {
           fields[i].finish();
         }
+
+        //////////////////////////////////////////////////
+        //// 5. StoredFieldsWriter#finishDocument
+        //////////////////////////////////////////////////
         finishStoredFields();
       }
     }
 
     try {
+      //////////////////////////////////////////////////
+      //// 6. FreqProxTermsWriter#finishDocument
+      ////    TermVectorsConsumer#finishDocument
+      //////////////////////////////////////////////////
       termsHash.finishDocument();
     } catch (Throwable th) {
       // Must abort, on the possibility that on-disk term
@@ -331,6 +362,9 @@ final class DefaultIndexingChain extends DocConsumer {
       throw new NullPointerException("IndexOptions must not be null (field: \"" + field.name() + "\")");
     }
 
+    //////////////////////////////////////////////////
+    //// 1. 反向索引 indexed field
+    //////////////////////////////////////////////////
     // Invert indexed fields:
     if (fieldType.indexOptions() != IndexOptions.NONE) {
       
@@ -341,9 +375,13 @@ final class DefaultIndexingChain extends DocConsumer {
       
       fp = getOrAddField(fieldName, fieldType, true);
       boolean first = fp.fieldGen != fieldGen;
+      //// Analyzer#tokenStream
+      //// FreqProxTermsWriterPerField#start & add
+      //// TermVectorsConsumerPerField#start & add
       fp.invert(field, first);
 
       if (first) {
+        //// 添加到 fields
         fields[fieldCount++] = fp;
         fp.fieldGen = fieldGen;
       }
@@ -351,6 +389,10 @@ final class DefaultIndexingChain extends DocConsumer {
       verifyUnIndexedFieldType(fieldName, fieldType);
     }
 
+    //////////////////////////////////////////////////
+    //// 2. 写入 stored field
+    ////    调用 StoredFieldsWriter#writeField
+    //////////////////////////////////////////////////
     // Add stored fields:
     if (fieldType.stored()) {
       if (fp == null) {
@@ -365,6 +407,10 @@ final class DefaultIndexingChain extends DocConsumer {
       }
     }
 
+    //////////////////////////////////////////////////
+    //// 3. 索引 doc value
+    ////    调用 DocValuesWriter addValue
+    //////////////////////////////////////////////////
     DocValuesType dvType = fieldType.docValuesType();
     if (dvType == null) {
       throw new NullPointerException("docValuesType cannot be null (field: \"" + fieldName + "\")");
