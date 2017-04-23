@@ -213,9 +213,11 @@ class DocumentsWriterPerThread {
   public void updateDocument(Iterable<? extends IndexableField> doc, Analyzer analyzer, Term delTerm) throws IOException, AbortingException {
     testPoint("DocumentsWriterPerThread addDocument start");
     assert deleteQueue != null;
+    //// 校验 Doc 数量是否超过了 IndexWriter#actualMaxDocs
     reserveOneDoc();
     docState.doc = doc;
     docState.analyzer = analyzer;
+    //// 获取 DocID
     docState.docID = numDocsInRAM;
     if (INFO_VERBOSE && infoStream.isEnabled("DWPT")) {
       infoStream.message("DWPT", Thread.currentThread().getName() + " update delTerm=" + delTerm + " docID=" + docState.docID + " seg=" + segmentInfo.name);
@@ -229,6 +231,7 @@ class DocumentsWriterPerThread {
     boolean success = false;
     try {
       try {
+        //// consumer 处理 Doc
         consumer.processDocument();
       } finally {
         docState.clear();
@@ -236,11 +239,13 @@ class DocumentsWriterPerThread {
       success = true;
     } finally {
       if (!success) {
+        //// 添加 Doc 失败
         // mark document as deleted
         deleteDocID(docState.docID);
         numDocsInRAM++;
       }
     }
+    //// Term 删除操作以及 ++numDocsInRAM
     finishDocument(delTerm);
   }
 
@@ -417,6 +422,7 @@ class DocumentsWriterPerThread {
     }
 
     try {
+      //// DefaultIndexingChain#flush
       consumer.flush(flushState);
       pendingUpdates.terms.clear();
       segmentInfo.setFiles(new HashSet<>(directory.getCreatedFiles()));
@@ -454,6 +460,9 @@ class DocumentsWriterPerThread {
 
       FlushedSegment fs = new FlushedSegment(segmentInfoPerCommit, flushState.fieldInfos,
                                              segmentDeletes, flushState.liveDocs, flushState.delCountOnFlush);
+      //// CompoundFormat#write
+      //// SegmentInfoFormat#write
+      //// LiveDocsFormat#writeLiveDocs
       sealFlushedSegment(fs);
 
       return fs;
