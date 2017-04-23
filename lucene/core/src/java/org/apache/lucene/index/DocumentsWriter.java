@@ -440,10 +440,20 @@ final class DocumentsWriter implements Closeable, Accountable {
   boolean updateDocument(final Iterable<? extends IndexableField> doc, final Analyzer analyzer,
       final Term delTerm) throws IOException, AbortingException {
 
+    ////////////////////////////////////////////////////////////
+    //// 1. 对 flushControl#flushQueue 进行 doFlush
+    ////    并且调用 flushControl.waitIfStalled 进行等待
+    ////////////////////////////////////////////////////////////
     boolean hasEvents = preUpdate();
 
+    ////////////////////////////////////////////////////////////
+    //// 2. 获取空闲的 ThreadState 并调用 ThreadState#lock
+    ////////////////////////////////////////////////////////////
     final ThreadState perThread = flushControl.obtainAndLock();
 
+    ////////////////////////////////////////////////////////////
+    //// 3. 使用 ThreadState 更新 Doc
+    ////////////////////////////////////////////////////////////
     final DocumentsWriterPerThread flushingDWPT;
     try {
       if (!perThread.isActive()) {
@@ -467,11 +477,23 @@ final class DocumentsWriter implements Closeable, Accountable {
         numDocsInRAM.addAndGet(dwpt.getNumDocsInRAM() - dwptNumDocs);
       }
       final boolean isUpdate = delTerm != null;
+
+      ////////////////////////////////////////////////////////////
+      //// 4. 根据策略决定是否进行 flush
+      ////    若需要 flush 则将 dwpt 从 ThreadState checkout
+      ////////////////////////////////////////////////////////////
       flushingDWPT = flushControl.doAfterDocument(perThread, isUpdate);
     } finally {
+
+      ////////////////////////////////////////////////////////////
+      //// 5. 释放 ThreadState 并调用 ThreadState#unlock
+      ////////////////////////////////////////////////////////////
       perThreadPool.release(perThread);
     }
 
+    //////////////////////////////////////////////////////////
+    //// 6. applyAllDeletes 并且 doFlush
+    //////////////////////////////////////////////////////////
     return postUpdate(flushingDWPT, hasEvents);
   }
 
@@ -603,7 +625,11 @@ final class DocumentsWriter implements Closeable, Accountable {
     if (infoStream.isEnabled("DW")) {
       infoStream.message("DW", "startFullFlush");
     }
-    
+
+    ////////////////////////////////////////////////////////////
+    //// 1. 设置新的 deleteQueue
+    ////    并且将 dwpt 都添加到 flushControl.flushQueue
+    ////////////////////////////////////////////////////////////
     synchronized (this) {
       pendingChangesInCurrentFullFlush = anyChanges();
       flushingDeleteQueue = deleteQueue;
@@ -614,23 +640,36 @@ final class DocumentsWriter implements Closeable, Accountable {
       assert setFlushingDeleteQueue(flushingDeleteQueue);
     }
     assert currentFullFlushDelQueue != null;
+    //// 此时的 deleteQueue 已经是新生成的了
     assert currentFullFlushDelQueue != deleteQueue;
     
     boolean anythingFlushed = false;
     try {
+      ////////////////////////////////////////////////////////////
+      //// 2. 从 flushControl.flushQueue 获取 dwpt
+      ////    并且进行 doFlush
+      ////////////////////////////////////////////////////////////
       DocumentsWriterPerThread flushingDWPT;
       // Help out with flushing:
       while ((flushingDWPT = flushControl.nextPendingFlush()) != null) {
         anythingFlushed |= doFlush(flushingDWPT);
       }
       // If a concurrent flush is still in flight wait for it
-      flushControl.waitForFlush();  
+      flushControl.waitForFlush();
+
+      ////////////////////////////////////////////////////////////
+      //// 3. DocumentsWriterFlushQueue#addDeletes
+      ////////////////////////////////////////////////////////////
       if (!anythingFlushed && flushingDeleteQueue.anyChanges()) { // apply deletes if we did not flush any document
         if (infoStream.isEnabled("DW")) {
           infoStream.message("DW", Thread.currentThread().getName() + ": flush naked frozen global deletes");
         }
         ticketQueue.addDeletes(flushingDeleteQueue);
-      } 
+      }
+
+      ///////////////////////////////////////////////////////////
+      //// 4. 清理 DocumentsWriterFlushQueue
+      ///////////////////////////////////////////////////////////
       ticketQueue.forcePurge(writer);
       assert !flushingDeleteQueue.anyChanges() && !ticketQueue.hasTickets();
     } finally {
