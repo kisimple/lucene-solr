@@ -172,7 +172,14 @@ final class DocumentsWriterFlushControl implements Accountable {
   synchronized DocumentsWriterPerThread doAfterDocument(ThreadState perThread,
       boolean isUpdate) {
     try {
+      ////////////////////////////////////////////////////////////
+      //// 1. 更新 byteUsed/activeBytes/flushBytes 等信息
+      ////////////////////////////////////////////////////////////
       commitPerThreadBytes(perThread);
+
+      ////////////////////////////////////////////////////////////
+      //// 2. 是否进行 flush
+      ////////////////////////////////////////////////////////////
       if (!perThread.flushPending) {
         if (isUpdate) {
           flushPolicy.onUpdate(this, perThread);
@@ -185,9 +192,17 @@ final class DocumentsWriterFlushControl implements Accountable {
           setFlushPending(perThread);
         }
       }
+
+      ////////////////////////////////////////////////////////////
+      //// 3. 根据上一步决定是否 checkout dwpt
+      ////////////////////////////////////////////////////////////
       final DocumentsWriterPerThread flushingDWPT;
       if (fullFlush) {
         if (perThread.flushPending) {
+          //////////////////////////////////////////////////
+          //// 如果正在进行 full flush 则 checkout
+          //// 并将 dwpt 添加到 blockedFlushes
+          //////////////////////////////////////////////////
           checkoutAndBlock(perThread);
           flushingDWPT = nextPendingFlush();
         } else {
@@ -198,6 +213,9 @@ final class DocumentsWriterFlushControl implements Accountable {
       }
       return flushingDWPT;
     } finally {
+      ////////////////////////////////////////////////////////////
+      //// 4. 更新 DocumentsWriterStallControl#stalled
+      ////////////////////////////////////////////////////////////
       boolean stalled = updateStallState();
       assert assertNumDocsSinceStalled(stalled) && assertMemory();
     }
@@ -355,6 +373,10 @@ final class DocumentsWriterFlushControl implements Accountable {
   DocumentsWriterPerThread nextPendingFlush() {
     int numPending;
     boolean fullFlush;
+
+    ////////////////////////////////////////
+    //// 1. 从 flushQueue 获取
+    ////////////////////////////////////////
     synchronized (this) {
       final DocumentsWriterPerThread poll;
       if ((poll = flushQueue.poll()) != null) {
@@ -364,6 +386,11 @@ final class DocumentsWriterFlushControl implements Accountable {
       fullFlush = this.fullFlush;
       numPending = this.numPending;
     }
+
+    //////////////////////////////////////////////////
+    //// 2. 从 ThreadState 获取
+    ////    full flush 时 只从 flushQueue 获取
+    //////////////////////////////////////////////////
     if (numPending > 0 && !fullFlush) { // don't check if we are doing a full flush
       final int limit = perThreadPool.getActiveThreadState();
       for (int i = 0; i < limit && numPending > 0; i++) {
@@ -484,6 +511,10 @@ final class DocumentsWriterFlushControl implements Accountable {
   
   void markForFullFlush() {
     final DocumentsWriterDeleteQueue flushingQueue;
+
+    //////////////////////////////////////////////////
+    //// 1. 生成新的 documentsWriter.deleteQueue
+    //////////////////////////////////////////////////
     synchronized (this) {
       assert !fullFlush : "called DWFC#markForFullFlush() while full flush is still running";
       assert fullFlushBuffer.isEmpty() : "full flush buffer should be empty: "+ fullFlushBuffer;
@@ -494,6 +525,11 @@ final class DocumentsWriterFlushControl implements Accountable {
       DocumentsWriterDeleteQueue newQueue = new DocumentsWriterDeleteQueue(flushingQueue.generation+1);
       documentsWriter.deleteQueue = newQueue;
     }
+
+    //////////////////////////////////////////////////
+    //// 2. 从 perThreadPool 获取所有的 dwpt
+    ////    并添加到 fullFlushBuffer
+    //////////////////////////////////////////////////
     final int limit = perThreadPool.getActiveThreadState();
     for (int i = 0; i < limit; i++) {
       final ThreadState next = perThreadPool.getThreadState(i);
@@ -522,6 +558,10 @@ final class DocumentsWriterFlushControl implements Accountable {
         next.unlock();
       }
     }
+
+    //////////////////////////////////////////////////
+    //// 3. 将 fullFlushBuffer 添加到 flushQueue
+    //////////////////////////////////////////////////
     synchronized (this) {
       /* make sure we move all DWPT that are where concurrently marked as
        * pending and moved to blocked are moved over to the flushQueue. There is
@@ -563,12 +603,21 @@ final class DocumentsWriterFlushControl implements Accountable {
     assert dwpt.deleteQueue != documentsWriter.deleteQueue;
     if (dwpt.getNumDocsInRAM() > 0) {
       synchronized(this) {
+        ////////////////////////////////////////
+        //// 1. 设置 flush pending
+        ////////////////////////////////////////
         if (!perThread.flushPending) {
           setFlushPending(perThread);
         }
+        ////////////////////////////////////////
+        //// 2. checkout dwpt
+        ////////////////////////////////////////
         final DocumentsWriterPerThread flushingDWPT = internalTryCheckOutForFlush(perThread);
         assert flushingDWPT != null : "DWPT must never be null here since we hold the lock and it holds documents";
         assert dwpt == flushingDWPT : "flushControl returned different DWPT";
+        ////////////////////////////////////////
+        //// 3. 将 dwpt 添加到 fullFlushBuffer
+        ////////////////////////////////////////
         fullFlushBuffer.add(flushingDWPT);
       }
     } else {
@@ -588,6 +637,9 @@ final class DocumentsWriterFlushControl implements Accountable {
         assert !flushingWriters.containsKey(blockedFlush.dwpt) : "DWPT is already flushing";
         // Record the flushing DWPT to reduce flushBytes in doAfterFlush
         flushingWriters.put(blockedFlush.dwpt, Long.valueOf(blockedFlush.bytes));
+        ////////////////////////////////////////
+        //// 添加到 flushQueue
+        ////////////////////////////////////////
         // don't decr pending here - it's already done when DWPT is blocked
         flushQueue.add(blockedFlush.dwpt);
       }
@@ -599,8 +651,10 @@ final class DocumentsWriterFlushControl implements Accountable {
     assert flushQueue.isEmpty();
     assert flushingWriters.isEmpty();
     try {
+      //// full flush 期间 checkoutAndBlock 新增的 pending flush
       if (!blockedFlushes.isEmpty()) {
         assert assertBlockedFlushes(documentsWriter.deleteQueue);
+        //// 清空 blockedFlushes 并添加到 flushQueue
         pruneBlockedQueue(documentsWriter.deleteQueue);
         assert blockedFlushes.isEmpty();
       }
