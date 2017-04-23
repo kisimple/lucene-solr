@@ -104,10 +104,12 @@ final class FreqProxTermsWriter extends TermsHash {
     FieldsConsumer consumer = state.segmentInfo.getCodec().postingsFormat().fieldsConsumer(state);
     boolean success = false;
     try {
+      //// BlockTreeTermsWriter#write
       consumer.write(fields);
       success = true;
     } finally {
       if (success) {
+        //// BlockTreeTermsWriter#close
         IOUtils.close(consumer);
       } else {
         IOUtils.closeWhileHandlingException(consumer);
